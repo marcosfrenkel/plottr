@@ -24,6 +24,7 @@ import h5py
 
 from qcodes.utils import NumpyJSONEncoder
 from plottr import QtGui, Signal, Slot, QtWidgets, QtCore
+from ..utils.misc import get_dict_size
 
 from ..node import (
     Node, NodeWidget, updateOption, updateGuiFromNode,
@@ -475,6 +476,9 @@ class DDH5Loader(Node):
         self.loadingWorker.dataLoaded.connect(lambda x: self.loadingThread.quit())
         self.setProcessOptions.connect(self.loadingWorker.setPathAndGroup)
 
+        # beginning time when the loader starts loading data. Used for debugging purposes.
+        self.startTime = None
+
     @property
     def filepath(self) -> Optional[str]:
         return self._filepath
@@ -499,6 +503,8 @@ class DDH5Loader(Node):
 
         # TODO: maybe needs an optional way to read only new data from file? -- can make that an option
 
+        self.startTime = time.time()
+
         # this is the flow when process is called due to some trigger
         if self._filepath is None or self._groupname is None:
             return None
@@ -522,8 +528,11 @@ class DDH5Loader(Node):
         self.nLoadedRecords = nrecords
         self.setOutput(dataOut=data)
 
+        dataSize = get_dict_size(data)
+        self.node_logger.debug(f'DDH5Loader took: {time.time() - self.startTime}s\t Bytes size: {dataSize}')
         # this makes sure that we analyze the data and emit signals for changes
         super().process(dataIn=data)
+        self.node_logger.debug(f'final time since loading to plot: {time.time() - self.startTime}s')
 
 
 class _Loader(QtCore.QObject):

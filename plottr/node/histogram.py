@@ -9,6 +9,7 @@ This module contains the following classes:
   of the user options for the node.
 """
 
+import time
 from typing import Union, Optional, Dict, List, Type
 
 import numpy as np
@@ -18,6 +19,7 @@ from plottr import QtWidgets
 from ..gui.widgets import FormLayoutWrapper, DimensionCombo
 from ..data.datadict import DataDictBase, MeshgridDataDict
 from .node import Node, NodeWidget, updateOption
+from ..utils import get_dict_size
 
 
 class _HistogramOptionsWidget(FormLayoutWrapper):
@@ -131,6 +133,7 @@ class Histogrammer(Node):
 
     def process(self, dataIn: Optional[DataDictBase]=None) \
             -> Optional[Dict[str, Optional[DataDictBase]]]:
+        startTime = time.time()
         data = super().process(dataIn=dataIn)
         if data is None:
             return None
@@ -212,6 +215,10 @@ class Histogrammer(Node):
                 newData[ax]['values'] = axData
 
         if newData.validate():
+            endTime = time.time()
+            dataSize = get_dict_size(newData)
+            self.node_logger.debug(
+                f'Histogrammer took: {endTime - startTime}\t Bytes size: {dataSize}\t getting the size took: {end_data_time - start_data_time}')
             return dict(dataOut=newData)
 
         return None

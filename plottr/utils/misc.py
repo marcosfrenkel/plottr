@@ -3,6 +3,7 @@
 Various utility functions.
 """
 
+import sys
 from enum import Enum
 from typing import List, Tuple, TypeVar, Optional, Sequence, Any
 
@@ -112,3 +113,14 @@ class LabeledOptions(AutoEnum):
             if k.label.lower() == label.lower():
                 return k
         return None
+
+
+def get_dict_size(my_dict):
+    """
+    Gets the size of the dictionary as well as all of the items inside of it.
+    """
+    size = sys.getsizeof(my_dict)
+    if isinstance(my_dict, dict):
+        for k, v in my_dict.items():
+            size += get_dict_size(v)
+    return size

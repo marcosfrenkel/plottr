@@ -3,6 +3,7 @@ data_selector.py
 
 A node and widget for subselecting from a dataset.
 """
+import time
 from typing import List, Tuple, Dict, Any, Sequence, Optional
 
 import numpy as np
@@ -11,7 +12,7 @@ from .node import Node, NodeWidget, updateOption
 from ..data.datadict import DataDictBase, DataDict
 from ..gui.data_display import DataSelectionWidget
 from plottr.icons import get_dataColumnsIcon
-from ..utils import num
+from ..utils import num, get_dict_size
 
 __author__ = 'Wolfgang Pfaff'
 __license__ = 'MIT'
@@ -158,6 +159,7 @@ class DataSelector(Node):
         return ret
 
     def process(self, dataIn: Optional[DataDictBase] = None) -> Optional[Dict[str, Any]]:
+        startTime = time.time()
         data = super().process(dataIn=dataIn)
         if data is None:
             return None
@@ -176,6 +178,10 @@ class DataSelector(Node):
             if not data.validate():
                 return None
 
+        endTime = time.time()
+        dataSize = get_dict_size(data)
+        self.node_logger.debug(
+            f'DataSelector took: {endTime - startTime}s\t Bytes size: {dataSize}')
         return dict(dataOut=data)
 
     # Methods for GUI interaction

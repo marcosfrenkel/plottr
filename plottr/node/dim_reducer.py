@@ -2,6 +2,7 @@
 
 nodes and widgets for reducing data dimensionality.
 """
+import time
 from typing import Dict, Any, Tuple, Type, Optional, List, Union, cast, Callable
 from enum import Enum, unique
 
@@ -16,6 +17,7 @@ from plottr.icons import get_xySelectIcon
 __author__ = 'Wolfgang Pfaff'
 __license__ = 'MIT'
 
+from ..utils import get_dict_size
 
 # Some helpful reduction functions
 
@@ -890,6 +892,7 @@ class XYSelector(DimensionReducer):
             self,
             dataIn: Optional[DataDictBase] = None
     ) -> Optional[Dict[str, Optional[DataDictBase]]]:
+        startTime = time.time()
         if dataIn is None:
             return None
 
@@ -910,4 +913,8 @@ class XYSelector(DimensionReducer):
         if self.ui is not None:
             self.ui.setRoles(self.dimensionRoles)
 
+        endTime = time.time()
+        dataSize = get_dict_size(data)
+        self.node_logger.debug(
+            f'DimensionReducer took: {endTime - startTime}s\t Bytes size: {dataSize}')
         return dict(dataOut=data)

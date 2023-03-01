@@ -24,6 +24,7 @@ from .plots import Plot, PlotWithColorbar, PlotBase
 from ..base import AutoFigureMaker as BaseFM, PlotDataType, \
     PlotItem, ComplexRepresentation, determinePlotDataType, \
     PlotWidgetContainer, PlotWidget
+from ...utils import get_dict_size
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +246,7 @@ class AutoPlot(PlotWidget):
         self.fmWidget: Optional[FigureWidget] = None
         self.figConfig: Optional[FigureConfigToolBar] = None
         self.figOptions: FigureOptions = FigureOptions()
-        self.title : Optional[str] = None
+        self.title: Optional[str] = None
 
         layout = QtWidgets.QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -266,6 +267,7 @@ class AutoPlot(PlotWidget):
         :param data: input data
         :return: ``None``
         """
+        startTime = time.time()
         super().setData(data)
         if self.data is None:
             return
@@ -276,7 +278,9 @@ class AutoPlot(PlotWidget):
             fmKwargs['clearWidget'] = False
         else:
             fmKwargs['clearWidget'] = True
+        byteSize = get_dict_size(fmKwargs) + get_dict_size(data)
         self._plotData(**fmKwargs)
+        logger.debug(f'Plotting data took: {time.time() - startTime}\t data size: {byteSize}')
 
     def _plotData(self, **kwargs: Any) -> None:
         if self.data is None:

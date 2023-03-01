@@ -3,6 +3,7 @@ grid.py
 
 A node and widget for placing data onto a grid (or not).
 """
+import time
 from enum import Enum, unique
 
 from typing import Tuple, Dict, Any, List, Optional, Sequence, cast
@@ -18,6 +19,7 @@ from plottr.icons import get_gridIcon
 __author__ = 'Wolfgang Pfaff'
 __license__ = 'MIT'
 
+from ..utils import get_dict_size
 
 @unique
 class GridOption(Enum):
@@ -462,6 +464,7 @@ class DataGridder(Node[DataGridderNodeWidget]):
         #   don't get that information from the guess function, and it is also
         #   not reflected in the resulting data.
 
+        startTime = time.time()
         if dataIn is None:
             return None
 
@@ -535,6 +538,10 @@ class DataGridder(Node[DataGridderNodeWidget]):
             self.shapeDetermined.emit({'order': order,
                                        'shape': dout.shape()})
 
+        endTime = time.time()
+        dataSize = get_dict_size(dout)
+        self.node_logger.debug(
+            f'DataGridder took: {endTime - startTime}s\t Bytes size: {dataSize}')
         return dict(dataOut=dout)
 
     # Setup UI
