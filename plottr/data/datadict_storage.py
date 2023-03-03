@@ -477,7 +477,7 @@ class DDH5Loader(Node):
         self.setProcessOptions.connect(self.loadingWorker.setPathAndGroup)
 
         # beginning time when the loader starts loading data. Used for debugging purposes.
-        self.startTime = None
+        self.startTime: Optional[float] = None
 
     @property
     def filepath(self) -> Optional[str]:

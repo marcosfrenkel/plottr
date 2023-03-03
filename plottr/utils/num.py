@@ -141,8 +141,9 @@ def _find_switches(arr: np.ndarray,
                    ztol: float = 1e-15) -> np.ndarray:
     arr_: np.ndarray = np.ma.MaskedArray(arr, is_invalid(arr))
     deltas = arr_[1:] - arr_[:-1]
-    hi = np.percentile(arr[~is_invalid(arr)], 100.-rth)
-    lo = np.percentile(arr[~is_invalid(arr)], rth)
+    valid_arr = arr[~is_invalid(arr)]
+    hi = np.percentile(valid_arr, 100.-rth)
+    lo = np.percentile(valid_arr, rth)
     diff = np.abs(hi-lo)
 
     if not diff > ztol:
