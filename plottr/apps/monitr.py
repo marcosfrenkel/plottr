@@ -18,7 +18,18 @@ import json
 from enum import Enum, auto
 from pathlib import Path
 from multiprocessing import Process
-from typing import List, Optional, Dict, Any, Union, Generator, Iterable, Tuple, Sequence
+from typing import (
+    List,
+    Optional,
+    Dict,
+    Any,
+    Union,
+    Generator,
+    Iterable,
+    Tuple,
+    Sequence,
+    cast,
+)
 from functools import partial
 from itertools import cycle
 
@@ -522,6 +533,9 @@ class FileModel(QtGui.QStandardItemModel):
                 LOGGER.warning(f'Files have been found in the monitoring folder, please remove them')
             return False
 
+        # Checks if the item is in a hidden folder, if it is ignore.
+        if any(part.startswith('.') for part in folder_path.parts): return None
+
         # Check if the new item should have a parent item. If the new item should have a parent, but this does
         # not yet exist, create it.
         if folder_path.parent == self.monitor_path:
@@ -583,9 +597,9 @@ class FileModel(QtGui.QStandardItemModel):
         """
         # LOGGER.debug(f'file created: {event}')
 
-        path = Path(event.src_path)
+        path = Path(str(event.src_path))
         # If a folder is created, it will be added when a data file will be created.
-        if not path.is_dir():
+        if not path.is_dir() and not any(part.startswith('.') for part in path.parts):
 
             # If the file created is a lock, we ignore it.
             if not is_file_lock(path):
@@ -622,7 +636,7 @@ class FileModel(QtGui.QStandardItemModel):
         """
         # LOGGER.debug(f'file deleted: {event}')
 
-        path = Path(event.src_path)
+        path = Path(str(event.src_path))
         # If the path deleted it's a folder, then it should be in the mian dictionary, or we don't care about it.
         if path in self.main_dictionary:
             item = self.main_dictionary[path]
@@ -697,8 +711,8 @@ class FileModel(QtGui.QStandardItemModel):
         # so we ignore them.
         if event.src_path is not None and event.src_path != '' \
                 and event.dest_path is not None and event.dest_path != '':
-            src_path = Path(event.src_path)
-            dest_path = Path(event.dest_path)
+            src_path = Path(str(event.src_path))
+            dest_path = Path(str(event.dest_path))
 
             # If a directory is moved, only need to change the old path for the new path
             if event.is_directory:
@@ -820,7 +834,7 @@ class FileModel(QtGui.QStandardItemModel):
         """
         # LOGGER.debug(f'file modified: {event}')
 
-        path = Path(event.src_path)
+        path = Path(str(event.src_path))
 
         if path.parent in self.main_dictionary:
 
@@ -1115,6 +1129,11 @@ class FileTreeView(QtWidgets.QTreeView):
     #:  - The index of the currently selected item.
     item_deleted = Signal(QtCore.QModelIndex)
 
+    # Signal(Path) -- Emitted when the copy path action has been clicked.
+    #: Arguments:
+    #:  - The index of the currently selected item.
+    item_path_copied = Signal(QtCore.QModelIndex)
+
     def __init__(self, proxy_model: SortFilterProxyModel, parent: Optional[Any] = None):
         """
         The TreeView used in the FileExplorer widget.
@@ -1132,6 +1151,7 @@ class FileTreeView(QtWidgets.QTreeView):
         self.un_trash_text = 'un-trash'
 
         self.context_menu = QtWidgets.QMenu(self)
+        self.copy_path_action = QtWidgets.QAction('copy path')
         self.star_action = QtWidgets.QAction('star')
         self.trash_action = QtWidgets.QAction('trash')
         self.delete_action = QtWidgets.QAction('delete')
@@ -1222,7 +1242,7 @@ class FileTreeView(QtWidgets.QTreeView):
             return
 
         assert isinstance(item, Item)
-        # Sets the correct the correct text for the context menu depending on the state of the item.
+        # Sets the correct text for the context menu depending on the state of the item.
         if item.star:
             self.star_action.setText(self.un_star_text)
         else:
@@ -1232,6 +1252,8 @@ class FileTreeView(QtWidgets.QTreeView):
         else:
             self.trash_action.setText(self.trash_text)
 
+        self.context_menu.addAction(self.copy_path_action)
+        self.context_menu.addSeparator()
         self.context_menu.addAction(self.star_action)
         self.context_menu.addAction(self.trash_action)
         self.context_menu.addSeparator()
@@ -1277,6 +1299,13 @@ class FileTreeView(QtWidgets.QTreeView):
 
         item_proxy_index = self.currentIndex()
         item_index = self.proxy_model.mapToSource(item_proxy_index)
+
+        # If the action is copy the path, we just want to emit the correct signal and not do anything else.
+        # The model does not need to know about it.
+        if action == self.copy_path_action:
+            self.item_path_copied.emit(item_index)
+            return
+
         self.model_.tag_action_triggered(item_index, tag)
 
     def currentChanged(self, current: QtCore.QModelIndex, previous: QtCore.QModelIndex) -> None:
@@ -1736,6 +1765,10 @@ class FileExplorer(QtWidgets.QWidget):
                  *args: Any, **kwargs: Any):
         super().__init__(parent=parent, *args, **kwargs)  # type: ignore[misc] # I suspect this error comes from having parent possibly be a kwarg too.
 
+        # Holds all the current .ddh5 file paths that are currently being displayed.
+        # Used to set the tooltip in the copy button
+        self.path_list: Union[List[str], str] = []
+
         # Tree and model initialization
         self.proxy_model = proxy_model
         self.model = proxy_model.sourceModel()
@@ -1755,6 +1788,7 @@ class FileExplorer(QtWidgets.QWidget):
         self.refresh_button = QtWidgets.QPushButton('Refresh')
         self.expand_button = QtWidgets.QPushButton('Expand')
         self.collapse_button = QtWidgets.QPushButton('Collapse')
+        self.copy_button = QtWidgets.QPushButton('Copy Path')
         self.tag_filter_combobox = QtWidgets.QComboBox()
         self.tag_filter_combobox.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.tag_filter_combobox.setModel(self.model.tags_model)
@@ -1775,6 +1809,7 @@ class FileExplorer(QtWidgets.QWidget):
         self.filter_and_buttons_layout.addWidget(self.trash_button)
         self.filter_and_buttons_layout.addWidget(self.tag_filter_combobox)
         self.bottom_buttons_layout.addWidget(self.refresh_button)
+        self.bottom_buttons_layout.addWidget(self.copy_button)
         self.bottom_buttons_layout.addWidget(self.expand_button)
         self.bottom_buttons_layout.addWidget(self.collapse_button)
         self.main_layout.addLayout(self.filter_and_buttons_layout)
@@ -1785,6 +1820,7 @@ class FileExplorer(QtWidgets.QWidget):
         self.trash_button.clicked.connect(self.on_star_trash_refresh_clicked)
         self.expand_button.clicked.connect(self.file_tree.expandAll)
         self.collapse_button.clicked.connect(self.file_tree.collapseAll)
+        self.copy_button.clicked.connect(self.on_copy_button_clicked)
 
         self.filter_line_edit.textChanged.connect(self.on_filter_triggered)
         self.model.selected_tags_changed.connect(self.on_selected_tag_changed)
@@ -1794,6 +1830,9 @@ class FileExplorer(QtWidgets.QWidget):
 
         # When the refresh button of the file explorer is pressed, refresh the model
         self.refresh_button.clicked.connect(self.model.refresh_model)
+
+        self.file_tree.item_path_copied.connect(self.on_create_path_list)
+        self.on_create_path_list()
 
     @Slot(list)
     def on_selected_tag_changed(self, tags_filter: List[str]) -> None:
@@ -1832,8 +1871,14 @@ class FileExplorer(QtWidgets.QWidget):
         self.filter_thread = QtCore.QThread(self)
         self.filter_worker = FilterWorker()
         self.filter_worker.moveToThread(self.filter_thread)
-        run_fun = partial(self.filter_worker.run, self.model, self.star_button.isChecked(),
-                          self.trash_button.isChecked(), filter, self.selected_tags)
+        run_fun = partial(
+            self.filter_worker.run,
+            cast(FileModel, self.model),
+            self.star_button.isChecked(),
+            self.trash_button.isChecked(),
+            filter,
+            self.selected_tags,
+        )
         self.filter_thread.started.connect(run_fun)
         self.filter_worker.finished.connect(self.on_finished_filtering)
         self.filter_thread.start()
@@ -1860,6 +1905,8 @@ class FileExplorer(QtWidgets.QWidget):
 
         items_list = [item for item in results_dict.values()]
         self.proxy_model.filter_requested(list(items_list), self.star_button.isChecked(), self.trash_button.isChecked())
+
+        self.on_create_path_list()
 
     @Slot(Item)
     def on_new_item_created(self, item: Item) -> None:
@@ -1915,6 +1962,44 @@ class FileExplorer(QtWidgets.QWidget):
             if item in self.proxy_model.allowed_items:
                 self.proxy_model.allowed_items.remove(item)
                 self.proxy_model.trigger_filter()
+
+    def on_create_path_list(self, item_index: Optional[QtCore.QModelIndex] = None) -> None:
+        """
+        Creates the path list for the copy button. The path list is a list of all the paths of the data files of the
+        allowed items. If no item_index is passed, it will copy all the items that are currently shown by the view.
+        If an item_index is passed, it will copy only the data files of that selected item
+
+        :param item_index: the index of the item whose data files paths we want to copy.
+        """
+        self.path_list = []
+        if item_index is None:
+            for item in self.proxy_model.allowed_items:
+                assert isinstance(item, Item)
+                for path, tpe in item.files.items():
+                    if tpe == ContentType.data:
+                        self.path_list.append(str(path))
+        else:
+            item = self.model.itemFromIndex(item_index)  # type: ignore[attr-defined] # Not sure why mypy is complaining about using itemFromIndex only here but not in other places.
+            assert isinstance(item, Item)
+            for path, tpe in item.files.items():
+                if tpe == ContentType.data:
+                    self.path_list.append(str(path))
+
+        if len(self.path_list) > 10:
+            self.copy_button.setToolTip('Copy the paths of the data files for the currently filtered items.')
+        else:
+            if len(self.path_list) == 1:
+                self.path_list = "'" + str(self.path_list[0]) + "'"
+            self.copy_button.setToolTip('Copy the following paths to clipboard:\n' + str(self.path_list))
+
+    @Slot()
+    def on_copy_button_clicked(self) -> None:
+        """
+        Gets called when the copy button is clicked. Copies the contents of self.path_list to the clipboard.
+        """
+        clipboard = QtWidgets.QApplication.clipboard()
+        clipboard.setText(str(self.path_list))
+
 
 class DataTreeWidgetItem(QtWidgets.QTreeWidgetItem):
     """

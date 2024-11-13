@@ -6,7 +6,8 @@ Data classes we use throughout the plottr package, and tools to work on them.
 import warnings
 import copy as cp
 import re
-
+import logging
+import pandas as pd
 import numpy as np
 from functools import reduce
 from typing import List, Tuple, Dict, Sequence, Union, Any, Iterator, Optional, TypeVar
@@ -18,11 +19,12 @@ __author__ = 'Wolfgang Pfaff'
 __license__ = 'MIT'
 
 
-# TODO: functionality that returns axes values given a set of slices.
-# TODO: an easier way to access data and meta values.
-#       maybe with getattr/setattr?
+logger = logging.getLogger(__name__)
+
+
 # TODO: direct slicing of full datasets. implement getitem/setitem?
-# TODO: feature to compare if datadicts are equal not fully tested yet.
+# TODO: it may be more sophisticated do define a dataclass for a data field?
+#   (or some other dedicated object)
 
 
 def is_meta_key(key: str) -> bool:
@@ -82,6 +84,7 @@ class DataDictBase(dict):
 
     def __init__(self, **kw: Any):
         super().__init__(self, **kw)
+        self.d_ = DataDictBase._DataAccess(self) 
 
     def __eq__(self, other: object) -> bool:
         """Check for content equality of two datadicts."""
@@ -332,6 +335,7 @@ class DataDictBase(dict):
         else:
             data = data.copy()
 
+        # include all the axes used by the data.
         for d in data:
             for a in self.axes(d):
                 if a not in data:
@@ -426,7 +430,7 @@ class DataDictBase(dict):
             for n, v in self.data_items():
                 if n not in remove_data:
                     v2 = v.copy()
-                    v2.pop('values')
+                    v2['values'] = []
                     s[n] = cp.deepcopy(v2)
                     if 'axes' in s[n]:
                         for r in remove_data:
@@ -447,7 +451,7 @@ class DataDictBase(dict):
         return None
     
 
-    def nbytes(self, name: Optional[str]=None) -> int:
+    def nbytes(self, name: Optional[str]=None) -> Optional[int]:
         """Get the size of data.
         
         :param name: Name of the data field. if none, return size of 
@@ -460,6 +464,8 @@ class DataDictBase(dict):
                             for _, v in self.data_items()])
             else:
                 return self.data_vals(name).size * self.data_vals(name).itemsize
+        
+        return None
 
 
     def label(self, name: str) -> Optional[str]:
@@ -576,6 +582,8 @@ class DataDictBase(dict):
         :return: ``True`` if valid, ``False`` if invalid.
         :raises: ``ValueError`` if invalid.
         """
+        self._update_data_access()
+
         msg = '\n'
         for n, v in self.data_items():
 
@@ -616,7 +624,6 @@ class DataDictBase(dict):
         """
         dependents = self.dependents()
         unused = []
-        ret = self.copy()
 
         for n, v in self.data_items():
             used = False
@@ -630,9 +637,9 @@ class DataDictBase(dict):
                 unused.append(n)
 
         for u in unused:
-            del ret[u]
+            del self[u]
 
-        return ret
+        return self
 
     def sanitize(self: T) -> T:
         """
@@ -671,20 +678,19 @@ class DataDictBase(dict):
         :param pos: New axes position in the form ``axis_name = new_position``.
                     Non-specified axes positions are adjusted automatically.
 
-        :return: Dataset with re-ordered axes.
+        :return: Dataset with re-ordered axes (not a copy)
         """
         if data_names is None:
             data_names = self.dependents()
         if isinstance(data_names, str):
             data_names = [data_names]
 
-        ret = self.copy()
         for n in data_names:
             neworder, newaxes = self.reorder_axes_indices(n, **pos)
-            ret[n]['axes'] = newaxes
+            self[n]['axes'] = newaxes
 
-        ret.validate()
-        return ret
+        self.validate()
+        return self
 
     def copy(self: T) -> T:
         """
@@ -692,30 +698,34 @@ class DataDictBase(dict):
 
         :return: A copy of the dataset.
         """
-        return cp.deepcopy(self)
+        logger.debug(f'copying a dataset with size {self.nbytes()}')
+        ret = self.structure()
+        assert ret is not None
+
+        for k, v in self.data_items():
+            ret[k]['values'] = self.data_vals(k).copy()
+        return ret
 
     def astype(self: T, dtype: np.dtype) -> T:
         """
         Convert all data values to given dtype.
 
         :param dtype: np dtype.
-        :return: Copy of the dataset, with values as given type.
+        :return: Dataset, with values as given type (not a copy)
         """
-        ret = self.copy()
-        for k, v in ret.data_items():
+        for k, v in self.data_items():
             vals = v['values']
             if type(v['values']) not in [np.ndarray, np.ma.core.MaskedArray]:
                 vals = np.array(v['values'])
-            ret[k]['values'] = vals.astype(dtype)
+            self[k]['values'] = vals.astype(dtype)
 
-        return ret
+        return self
 
     def mask_invalid(self: T) -> T:
         """
         Mask all invalid data in all values.
         :return: Copy of the dataset with invalid entries (nan/None) masked.
         """
-        ret = self.copy()
         for d, _ in self.data_items():
             arr = self.data_vals(d)
             vals = np.ma.masked_where(num.is_invalid(arr), arr, copy=True)
@@ -723,9 +733,38 @@ class DataDictBase(dict):
                 vals.fill_value = np.nan
             except TypeError:
                 vals.fill_value = -9999
-            ret[d]['values'] = vals
+            self[d]['values'] = vals
 
-        return ret
+        return self
+    
+    class _DataAccess:
+        def __init__(self, parent: "DataDictBase") -> None:
+            self._parent = parent
+
+        def __getattribute__(self, __name: str) -> Any:
+            parent = super(DataDictBase._DataAccess, self).__getattribute__('_parent')
+
+            if __name in [k for k, _ in parent.data_items()]:
+                return parent.data_vals(__name)
+            else:
+                return super(DataDictBase._DataAccess, self).__getattribute__(__name)
+
+        def __setattr__(self, __name: str, __value: Any) -> None:
+            # this check: make sure that we can set the parent correctly in the
+            # constructor.
+            if hasattr(self, '_parent'):
+                if __name in [k for k, _ in self._parent.data_items()]:
+                    self._parent[__name]['values'] = __value
+                
+                # still allow setting random things, essentially.
+                else:
+                    super(DataDictBase._DataAccess, self).__setattr__(__name, __value)
+            else:
+                super(DataDictBase._DataAccess, self).__setattr__(__name, __value)
+
+    def _update_data_access(self) -> None:
+        for d, i in self.data_items():
+            self.d_.__dict__[d] = None
 
 
 class DataDict(DataDictBase):
@@ -890,7 +929,7 @@ class DataDict(DataDictBase):
         ret = DataDict(**struct)
 
         if self.is_expanded():
-            return self.copy()
+            return self
 
         ishp = self._inner_shapes()
         size = max([int(np.prod(s)) for s in ishp.values()])
@@ -962,8 +1001,6 @@ class DataDict(DataDictBase):
         ishp = self._inner_shapes()
         idxs = []
 
-        ret = self.copy()
-
         # collect rows that are completely invalid
         for d in self.dependents():
 
@@ -999,10 +1036,10 @@ class DataDict(DataDictBase):
         if len(idxs) > 0:
             remove_idxs = reduce(np.intersect1d,
                                  tuple(np.array(idxs).astype(int)))
-            for k, v in ret.data_items():
+            for k, v in self.data_items():
                 v['values'] = np.delete(v['values'], remove_idxs, axis=0)
 
-        return ret
+        return self
 
 
 class MeshgridDataDict(DataDictBase):
@@ -1067,6 +1104,9 @@ class MeshgridDataDict(DataDictBase):
                     msg += f" {v['values'].shape}, "
                     msg += f"and '{shpsrc}' has {shp}.\n"
 
+            if msg != '\n':
+                raise ValueError(msg)
+
             if 'axes' in v:
                 for axis_num, na in enumerate(v['axes']):
                     # check that the data of the axes matches its use
@@ -1076,10 +1116,25 @@ class MeshgridDataDict(DataDictBase):
                     # for the data to be a valid meshgrid, we need to have an increase/decrease along each
                     # axis that contains data.
                     if axis_data.size > 0:
-                        max_step_along_axes = np.max(np.abs(np.diff(data_items[na]['values'],axis=axis_num)))
-                        if max_step_along_axes == 0:
-                            msg += (f"Malformed data: {na} is expected to be {axis_num}th "
-                                     "axis but has no variation along that axis.\n")
+                        # if axis length is 1, then we cannot infer anything about grids yet
+
+                        try:
+                            if axis_data.shape[axis_num] > 1:
+                                steps = np.unique(np.sign(np.diff(axis_data, axis=axis_num)))
+                                
+                                # for incomplete data, there maybe nan steps -- we need to remove those, 
+                                # doesn't mean anything is wrong.
+                                steps = steps[~np.isnan(steps)]
+                                
+                                if 0 in steps:
+                                    msg += (f"Malformed data: {na} is expected to be {axis_num}th "
+                                            "axis but has no variation along that axis.\n")
+                                if steps.size > 1:
+                                    msg += (f"Malformed data: axis {na} is not monotonous.\n")
+                        
+                        # can happen if we have bad shapes. but that should already have been caught.
+                        except IndexError:
+                            pass
 
             if '__shape__' in v:
                 v['__shape__'] = shp
@@ -1109,19 +1164,23 @@ class MeshgridDataDict(DataDictBase):
             data_names = [data_names]
 
         transposed = []
-        ret: "MeshgridDataDict" = self.copy()
+        orders = {}
+        orig_axes = {}
+        for n in data_names:
+            orders[n] = self.reorder_axes_indices(n, **pos)
+            orig_axes[n] = self.axes(n).copy()
 
         for n in data_names:
-            neworder, newaxes = self.reorder_axes_indices(n, **pos)
-            ret[n]['axes'] = newaxes
-            ret[n]['values'] = self[n]['values'].transpose(neworder)
-            for ax in self.axes(n):
+            neworder, newaxes = orders[n]
+            self[n]['axes'] = newaxes
+            self[n]['values'] = self[n]['values'].transpose(neworder)
+            for ax in orig_axes[n]:
                 if ax not in transposed:
-                    ret[ax]['values'] = self[ax]['values'].transpose(neworder)
+                    self[ax]['values'] = self[ax]['values'].transpose(neworder)
                     transposed.append(ax)
 
-        ret.validate()
-        return ret
+        self.validate()
+        return self
     
     def mean(self, axis: str) -> 'MeshgridDataDict':
         """Take the mean over the given axis.
@@ -1156,6 +1215,8 @@ def _mesh_mean(data: MeshgridDataDict, ax: str) -> MeshgridDataDict:
     """
     iax = data.axes().index(ax)
     new_data = data.structure(remove_data=[ax])
+    assert isinstance(new_data, MeshgridDataDict)
+
     for d, v in data.data_items():
         if d in new_data:
             new_data[d]['values'] = data.data_vals(d).mean(axis=iax)
@@ -1163,7 +1224,7 @@ def _mesh_mean(data: MeshgridDataDict, ax: str) -> MeshgridDataDict:
     return new_data
 
 
-def _mesh_slice(data: MeshgridDataDict, **kwargs: Dict[str, Union[slice, int]]):
+def _mesh_slice(data: MeshgridDataDict, **kwargs: Dict[str, Union[slice, int]]) -> MeshgridDataDict:
     """Return a N-d slice of the data.
     
     :param data: input data
@@ -1172,11 +1233,13 @@ def _mesh_slice(data: MeshgridDataDict, **kwargs: Dict[str, Union[slice, int]]):
         notation).
     :return: sliced data
     """
-    slices = [np.s_[::] for a in data.axes()]
+    slices: List[Any] = [np.s_[::] for a in data.axes()]
     for ax, val in kwargs.items():
         i = data.axes().index(ax)
         slices[i] = val
     ret = data.structure()
+    assert isinstance(ret, MeshgridDataDict)
+
     for d, _ in data.data_items():
         ret[d]['values'] = data[d]['values'][tuple(slices)]
     ret.validate()
@@ -1210,7 +1273,8 @@ def guess_shape_from_datadict(data: DataDict) -> \
 def datadict_to_meshgrid(data: DataDict,
                          target_shape: Union[Tuple[int, ...], None] = None,
                          inner_axis_order: Union[None, Sequence[str]] = None,
-                         use_existing_shape: bool = False) \
+                         use_existing_shape: bool = False,
+                         copy: bool = True) \
         -> MeshgridDataDict:
     """
     Try to make a meshgrid from a dataset.
@@ -1232,6 +1296,9 @@ def datadict_to_meshgrid(data: DataDict,
     :param use_existing_shape: if ``True``, simply use the shape that the data
         already has. For numpy-array data, this might already be present.
         If ``False``, flatten and reshape.
+    :param copy: if ``True``, then we make a copy of the data arrays.
+        if ``False``, data array is modified in-place.
+
     :raises: GriddingError (subclass of ValueError) if the data cannot be gridded.
     :returns: The generated ``MeshgridDataDict``.
     """
@@ -1266,7 +1333,7 @@ def datadict_to_meshgrid(data: DataDict,
     axlist = data.axes(data.dependents()[0])
 
     for k, v in data.data_items():
-        vals = num.array1d_to_meshgrid(v['values'], target_shape, copy=True)
+        vals = num.array1d_to_meshgrid(v['values'], target_shape, copy=copy)
 
         # if an inner axis order is given, we transpose to transform from that
         # to the specified order.
@@ -1583,3 +1650,47 @@ def datasets_are_equal(a: DataDictBase, b: DataDictBase,
                     return False
 
     return True
+
+
+def datadict_to_dataframe(data: DataDict) -> pd.DataFrame:
+    """
+    datadict_to_dataframe use data stored in DataDict return a copy in form pandas.DataFrame
+    column labels are the names of variables
+    row labels are the index of values in list
+    ex.       x     y      z
+          0   x1    y1     z1
+          1   x2    y2     z2
+          2   x3    y3     z3
+
+    :param data: source data stored in Datadict form
+    :return: copy of data stored in DataFrame form
+    """
+    # initialize parameter
+    data_set = {}
+    axe_ls = data.axes()
+    dimension_check = True
+    max_ele = 0
+
+    # check for the dimension of Data
+    for key, value in data.data_items():
+        if np.shape(data.data_vals(key)) != np.shape(data.data_vals(axe_ls[0])):
+            dimension_check = False
+
+        if np.size(data.data_vals(key)) > max_ele:
+            max_ele = np.size(data.data_vals(key))
+
+    # if the dimension of all variables are the same, directly flat the array
+    if dimension_check:
+        for key, value in data.data_items():
+            data_set[key] = (data.data_vals(key)).flatten()
+
+    # if the dimension is different between variables, match their dimension to the highest one
+    else:
+        for key, value in data.data_items():
+            repeated_time = int(max_ele/np.size(data.data_vals(key)))
+            value_array = np.repeat(data.data_vals(key), repeated_time)
+            data_set[key] = value_array.flatten('F')
+
+    # convert organized data to DataFrame and return it
+    return pd.DataFrame(data=data_set)
+
